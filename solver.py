@@ -1,11 +1,5 @@
 import numpy as np
 
-A = np.array([[1., 2., 3.],
-              [2., -5., 7.],
-              [1., 2., 4.]])
-
-b = np.array([5., 1., -6.])
-
 def swap_rows(A, i, j):
     assert 0 <= i < len(A) and 0 <= j < len(A)
     temp = A.copy()
@@ -28,11 +22,14 @@ def inversion(E):
     A = E.copy()
     I = np.eye(len(A))
     for i in range(len(A)):
+        maximum, pos = 0, None
         for j in range(i, len(A)):
-            if abs(A[j][i]) > tol:
-                swap_rows(A, i, j)
-                swap_rows(I, i, j)
-                break
+            if abs(A[j][i]) - maximum > tol:
+                maximum = abs(A[j][i])
+                pos = j
+        if pos != None:
+            swap_rows(A, i, pos)
+            swap_rows(I, i, pos)
         else:
             raise ValueError("Matrix is singular")
         for j in range(i+1, len(A)):
@@ -60,6 +57,47 @@ def elimination(A, b):
     L = np.eye(len(A))
     P = np.eye(len(A))
     for i in range(max(len(E[0]), len(E))):
+        maximum, pos = 0, None
+        for j in range(row,len(E)):
+            if abs(E[j][min(i, len(E[0])-1)]) - maximum > tol:
+                maximum = abs(E[j][min(i, len(E[0])-1)])
+                pos = j
+        if pos != None:
+            swap_rows(E, row, pos)
+            swap_rows(D, row, pos)
+            swap_rows(P, row, pos)
+            L[row][:row], L[pos][:row] = L[pos][:row].copy(), L[row][:row].copy()
+            pivot_cols.append(i)
+        if min(i, len(E[0])-1) in pivot_cols:
+            for k in range(row+1, len(E)):
+                ratio = E[k][min(i, len(E[0])-1)]/E[row][min(i, len(E[0])-1)]
+                add_multiple_of_row(E, row, k, -1*ratio)
+                add_multiple_of_row(D, row, k, -1*ratio)
+                L[k][row] = ratio
+            if pivot_cols[-1] == len(E[0])-1:
+                return E, D, pivot_cols, L, P
+            row += 1
+    return E, D, pivot_cols, L, P
+
+def RREF(A):
+    R, _, pivot_cols, _, _ = elimination(A, np.zeros(len(A)))
+    for r, c in enumerate(pivot_cols):
+        for i in range(r):
+            ratio = R[i][c]/R[r][c]
+            add_multiple_of_row(R, r, i, -1*ratio)
+        ratio = 1/R[r][c]
+        scale_row(R, r, ratio)
+    return R, pivot_cols
+
+def elimination_old(A, b):
+    tol = 1e-10
+    E = A.copy()
+    D = b.copy()
+    pivot_cols = list()
+    row = 0
+    L = np.eye(len(A))
+    P = np.eye(len(A))
+    for i in range(max(len(E[0]), len(E))):
         for j in range(row,len(E)):
             if abs(E[j][min(i, len(E[0])-1)]) > tol:
                 swap_rows(E, row, j)
@@ -79,8 +117,6 @@ def elimination(A, b):
             row += 1
     return E, D, pivot_cols, L, P
 
-
-
 def backsubstitution(A, b):
     U, b, pivot_cols, L, P = elimination(A, b)
     X = np.zeros(len(U[0]))
@@ -94,22 +130,40 @@ def backsubstitution(A, b):
 
     return X
 
-rng = np.random.default_rng(0)
-fails = 0
+if __name__ == "__main__":
+    rng = np.random.default_rng(0)
+    A = np.array([[1., 2., 3.],
+                [2., -5., 7.],
+                [1., 2., 4.]])
 
-for trial in range(50):
-    A = rng.integers(-9, 10, size=(5, 5)).astype(float)
-    b = rng.integers(-9, 10, size=5).astype(float)
+    b = np.array([5., 1., -6.])
 
-    if abs(np.linalg.det(A)) < 1e-8:
-        continue
-    x = backsubstitution(A, b.copy())
+    fails = 0
 
-    matches_numpy = np.allclose(x, np.linalg.solve(A, b.copy()))
-    residual_ok = np.allclose(A @ x, b.copy())
+    for trial in range(50):
+        A = rng.integers(-9, 10, size=(5, 5)).astype(float)
+        b = rng.integers(-9, 10, size=5).astype(float)
 
-    if not (matches_numpy and residual_ok):
-        fails += 1
-        print(f"FAIL on trial {trial}\nA =\n{A}\nb = {b}\ngot {x}")
+        if abs(np.linalg.det(A)) < 1e-8:
+            continue
+        x = backsubstitution(A, b.copy())
 
-print("all passed" if fails == 0 else f"{fails} failures")
+        matches_numpy = np.allclose(x, np.linalg.solve(A, b.copy()))
+        residual_ok = np.allclose(A @ x, b.copy())
+
+        if not (matches_numpy and residual_ok):
+            fails += 1
+            print(f"FAIL on trial {trial}\nA =\n{A}\nb = {b}\ngot {x}")
+
+    print("all passed" if fails == 0 else f"{fails} failures")
+
+    G = np.array([[0.000000001, 1.],
+                [1., 1.]])
+    print(elimination(G, np.zeros(len(G)))[0])
+    print(elimination_old(G, np.zeros(len(G)))[0])
+
+    F = np.array([[5., 2., 3.],
+                [9., 5., 6.],
+                [9., -6., 4.],
+                [1., 2., 6.]])
+    print(RREF(F))

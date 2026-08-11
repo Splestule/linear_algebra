@@ -1,6 +1,6 @@
 import numpy as np
 from solver import (swap_rows, scale_row, add_multiple_of_row,
-                    elimination, backsubstitution, inversion)
+                    elimination, backsubstitution, inversion, RREF)
 
 TOL = 1e-10
 
@@ -460,6 +460,182 @@ def inversion_conditioning_report():
         print(f"  {n}x{n} Hilbert: yours {err:.2e}, numpy {err_np:.2e}")
 
 
+# ------------------------------------------------------------- 6. RREF
+
+def reference_rref(M, tol=TOL):
+    """An independent RREF, written with a different structure on purpose.
+
+    The RREF of a matrix is UNIQUE -- unlike U, which depends on pivoting
+    choices. So any correct implementation must agree with this one exactly,
+    which makes it a real oracle rather than just a second opinion.
+    """
+    R = M.astype(float).copy()
+    m, n = R.shape
+    row = 0
+    for col in range(n):
+        if row >= m:
+            break
+        p = None
+        for k in range(row, m):
+            if abs(R[k, col]) > tol:
+                p = k
+                break
+        if p is None:
+            continue                      # free column: no row consumed
+        R[[row, p]] = R[[p, row]]
+        R[row] = R[row] / R[row, col]
+        for k in range(m):
+            if k != row and abs(R[k, col]) > tol:
+                R[k] = R[k] - R[k, col] * R[row]
+        row += 1
+    R[np.abs(R) < tol] = 0.0
+    return R
+
+
+def rref_violations(R, pivot_cols, tol=1e-8):
+    """Return a list of reasons R is not in reduced row echelon form."""
+    problems = []
+    m, n = R.shape
+
+    # locate the pivots directly from R, without trusting pivot_cols
+    found = []
+    for r in range(m):
+        nz = np.where(np.abs(R[r]) > tol)[0]
+        if nz.size:
+            found.append((r, int(nz[0])))
+
+    # rows holding pivots must be the top rows -- zero rows sink to the bottom
+    if [r for r, _ in found] != list(range(len(found))):
+        problems.append(f"zero rows not at the bottom: nonzero rows "
+                        f"{[r for r, _ in found]}")
+
+    for idx, (r, c) in enumerate(found):
+        if abs(R[r, c] - 1.0) > tol:
+            problems.append(f"pivot at ({r},{c}) is {R[r, c]}, not 1")
+
+        column = R[:, c].copy()
+        column[r] = 0.0
+        if column.size and np.max(np.abs(column)) > tol:
+            problems.append(f"pivot column {c} not cleared above/below: {R[:, c]}")
+
+        if idx > 0 and c <= found[idx - 1][1]:
+            problems.append(f"pivot columns not increasing: "
+                            f"{[p[1] for p in found]}")
+
+    # the reported pivot_cols must match what's actually in R
+    if list(pivot_cols) != [c for _, c in found]:
+        problems.append(f"pivot_cols says {list(pivot_cols)}, R shows "
+                        f"{[c for _, c in found]}")
+
+    return problems
+
+
+RREF_SHAPES = {
+    "square, full rank": np.array([[1., 2., 3.], [2., -5., 7.], [1., 2., 4.]]),
+    "tall 4x3": np.array([[5., 2., 3.], [9., 5., 6.], [9., -6., 4.], [1., 2., 6.]]),
+    "free middle column": np.array([[1., 2., 3.], [2., 4., 7.], [1., 2., 4.]]),
+    "rank deficient": np.array([[1., 2., 3.], [4., 5., 6.], [5., 7., 9.]]),
+    "wide 3x5": np.array([[1., 2., 0., 3., 1.],
+                          [2., 4., 1., 7., 3.],
+                          [0., 0., 1., 1., 1.]]),
+    "tall, full column rank": np.array([[1., 2.], [2., 5.], [3., 7.], [1., 1.]]),
+    "zero first column": np.array([[0., 1., 2.], [0., 3., 4.], [0., 5., 7.]]),
+    "needs a swap": np.array([[0., 1., 2.], [3., 4., 5.], [6., 7., 9.]]),
+    "all zeros": np.zeros((3, 3)),
+    "identity": np.eye(3),
+    "single element": np.array([[7.]]),
+    "single zero element": np.array([[0.]]),
+}
+
+
+def rref_tests():
+    for name, A in RREF_SHAPES.items():
+        A_before = A.copy()
+        try:
+            Rmat, pivot_cols = RREF(A)
+        except Exception as ex:
+            R.check(f"[rref: {name}] runs", False, f"{type(ex).__name__}: {ex}")
+            continue
+
+        shown = np.round(Rmat, 8)
+
+        problems = rref_violations(Rmat, pivot_cols)
+        R.check(f"[rref: {name}] is in RREF", not problems,
+                "; ".join(problems) + f"\nR=\n{shown}")
+
+        want = reference_rref(A_before)
+        R.check(f"[rref: {name}] matches independent implementation",
+                np.allclose(Rmat, want, atol=1e-8),
+                f"\nyours=\n{shown}\nreference=\n{np.round(want, 8)}")
+
+        R.check(f"[rref: {name}] does not mutate A",
+                np.array_equal(A, A_before), f"A became\n{A}")
+
+        R.check(f"[rref: {name}] rank == #pivots",
+                len(pivot_cols) == np.linalg.matrix_rank(A_before),
+                f"numpy says {np.linalg.matrix_rank(A_before)}, got {len(pivot_cols)}")
+
+        R.check(f"[rref: {name}] row space preserved",
+                same_row_space(A_before, Rmat), f"R=\n{shown}")
+
+        # RREF is idempotent: reducing an already-reduced matrix changes nothing
+        R2, pivot_cols2 = RREF(Rmat.copy())
+        R.check(f"[rref: {name}] idempotent",
+                np.allclose(R2, Rmat, atol=1e-8)
+                and list(pivot_cols2) == list(pivot_cols),
+                f"second pass gave\n{np.round(R2, 8)}")
+
+
+def rref_identity_test():
+    """For an invertible A, RREF(A) is I, and RREF([A | I]) is [I | A^-1]."""
+    A = np.array([[1., 2., 3.], [2., -5., 7.], [1., 2., 4.]])
+    Rmat, pivot_cols = RREF(A.copy())
+    R.check("rref of an invertible matrix is I",
+            np.allclose(Rmat, np.eye(3), atol=1e-8)
+            and list(pivot_cols) == [0, 1, 2], f"got\n{np.round(Rmat, 8)}")
+
+    aug = np.hstack([A, np.eye(3)])
+    Rmat, pivot_cols = RREF(aug)
+    R.check("rref of [A | I] gives [I | A^-1]",
+            np.allclose(Rmat[:, :3], np.eye(3), atol=1e-8)
+            and np.allclose(Rmat[:, 3:], inversion(A.copy()), atol=1e-8),
+            f"got\n{np.round(Rmat, 8)}")
+
+
+def random_rref_tests(trials=300):
+    rng = np.random.default_rng(2024)
+    bad = 0
+    for t in range(trials):
+        A = random_matrix(rng, force_rank_deficient=(t % 2 == 0))
+        A_before = A.copy()
+        try:
+            Rmat, pivot_cols = RREF(A)
+        except Exception as ex:
+            bad += 1
+            if bad <= 3:
+                print(f"  crash on trial {t}, shape {A.shape}:\n{A_before}\n"
+                      f"  {type(ex).__name__}: {ex}")
+            continue
+
+        problems = rref_violations(Rmat, pivot_cols)
+        if not np.allclose(Rmat, reference_rref(A_before), atol=1e-7):
+            problems.append("disagrees with the independent implementation")
+        if len(pivot_cols) != np.linalg.matrix_rank(A_before):
+            problems.append(f"pivots {pivot_cols}, numpy rank "
+                            f"{np.linalg.matrix_rank(A_before)}")
+        if not same_row_space(A_before, Rmat):
+            problems.append("row space changed")
+
+        if problems:
+            bad += 1
+            if bad <= 3:
+                print(f"  trial {t}:\n{A_before}\n  yours=\n"
+                      f"{np.round(Rmat, 6)}\n  ref=\n"
+                      f"{np.round(reference_rref(A_before), 6)}\n  {problems}")
+
+    R.check(f"randomised RREF ({trials} trials)", bad == 0, f"{bad} bad cases")
+
+
 # ------------------------------------------------------------------ main
 
 if __name__ == "__main__":
@@ -471,6 +647,9 @@ if __name__ == "__main__":
     random_backsubstitution_tests()
     inversion_tests()
     random_inversion_tests()
+    rref_tests()
+    rref_identity_test()
+    random_rref_tests()
 
     print("\nconditioning (informational, not pass/fail):")
     inversion_conditioning_report()

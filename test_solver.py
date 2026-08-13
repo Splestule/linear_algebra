@@ -1,6 +1,6 @@
 import numpy as np
 from solver import (swap_rows, scale_row, add_multiple_of_row,
-                    elimination, backsubstitution, inversion, RREF)
+                    elimination, backsubstitution, inversion, RREF, null_space_special)
 
 TOL = 1e-10
 
@@ -28,10 +28,12 @@ class Results:
 R = Results()
 
 
-def echelon_violations(U, pivot_cols, tol=TOL):
+def echelon_violations(U, pivot_cols, tol=None):
     """Return a list of reasons U is not in row echelon form."""
     problems = []
     m, n = U.shape
+    if tol is None:      # scale with the matrix, or absolute tests break
+        tol = max(np.max(np.abs(U)), 1.0) * np.finfo(float).eps * max(m, n) * 10
 
     if list(pivot_cols) != sorted(set(pivot_cols)):
         problems.append(f"pivot_cols not strictly increasing: {pivot_cols}")
@@ -82,8 +84,23 @@ def factorisation_violations(A, U, L, P, tol=TOL):
     return problems
 
 
-def same_row_space(A, U, tol=TOL):
-    """A and U span the same row space iff stacking them adds no rank."""
+def same_row_space(A, U):
+    """A and U span the same row space iff stacking them adds no rank.
+
+    Uses numpy's default tolerance, which is RELATIVE to the largest singular
+    value. Passing an absolute tol here silently reports rank 0 for any
+    matrix scaled below it.
+    """
+    def unit(M):
+        s = np.max(np.abs(M))
+        return M if s == 0 else M / s
+
+    # Normalise first: otherwise the smaller matrix vanishes inside vstack,
+    # because numpy's tolerance is relative to the LARGEST singular value.
+    A, U = unit(A), unit(U)
+    # Generous tolerance: U and R carry accumulated roundoff in their zero
+    # rows, and numpy's default would count that noise as rank.
+    tol = 1e-7
     rank_A = np.linalg.matrix_rank(A, tol=tol)
     rank_U = np.linalg.matrix_rank(U, tol=tol)
     rank_stacked = np.linalg.matrix_rank(np.vstack([A, U]), tol=tol)
@@ -255,7 +272,7 @@ def random_elimination_tests(trials=300):
     rng = np.random.default_rng(12345)
     bad = 0
     for t in range(trials):
-        A = random_matrix(rng, force_rank_deficient=(t % 2 == 0))
+        A = random_matrix(rng, force_rank_deficient=(t % 2 == 0)) * (10.0 ** rng.integers(-8, 9))
         A_before = A.copy()
         try:
             U, pivot_cols, L, P = run_elimination(A)
@@ -322,9 +339,9 @@ def random_backsubstitution_tests(trials=200):
     ran = 0
     for t in range(trials):
         n = int(rng.integers(1, 7))
-        A = rng.integers(-9, 10, size=(n, n)).astype(float)
+        A = rng.integers(-9, 10, size=(n, n)).astype(float) * (10.0 ** rng.integers(-8, 9))
         b = rng.integers(-9, 10, size=n).astype(float)
-        if abs(np.linalg.det(A)) < 1e-8:
+        if np.linalg.matrix_rank(A) < n:
             continue
         ran += 1
         x = backsubstitution(A.copy(), b.copy())
@@ -422,8 +439,9 @@ def random_inversion_tests(trials=400):
     ran = 0
     for t in range(trials):
         n = int(rng.integers(1, 8))
-        M = rng.integers(-9, 10, size=(n, n)).astype(float)
-        singular = abs(np.linalg.det(M)) < 1e-8
+        M = rng.integers(-9, 10, size=(n, n)).astype(float) * (10.0 ** rng.integers(-8, 9))
+        # det scales like s**n, so it is useless here: use rank instead
+        singular = np.linalg.matrix_rank(M) < n
         try:
             inv = inversion(M.copy())
             if singular:
@@ -462,7 +480,7 @@ def inversion_conditioning_report():
 
 # ------------------------------------------------------------- 6. RREF
 
-def reference_rref(M, tol=TOL):
+def reference_rref(M, tol=None):
     """An independent RREF, written with a different structure on purpose.
 
     The RREF of a matrix is UNIQUE -- unlike U, which depends on pivoting
@@ -471,6 +489,11 @@ def reference_rref(M, tol=TOL):
     """
     R = M.astype(float).copy()
     m, n = R.shape
+    if tol is None:
+        # Same relative rule the solver uses, with headroom for the roundoff
+        # this reference accumulates -- it pivots on the first nonzero rather
+        # than the largest, so it is less numerically stable than the solver.
+        tol = np.max(np.abs(R)) * np.finfo(float).eps * max(m, n) * 1e3
     row = 0
     for col in range(n):
         if row >= m:
@@ -492,10 +515,16 @@ def reference_rref(M, tol=TOL):
     return R
 
 
-def rref_violations(R, pivot_cols, tol=1e-8):
+def rref_violations(R, pivot_cols, tol=None):
     """Return a list of reasons R is not in reduced row echelon form."""
     problems = []
     m, n = R.shape
+    if tol is None:
+        # R is normalised, so its entries are O(1) regardless of input scale.
+        # But the leftover roundoff in R is driven by the CONDITIONING of the
+        # input, not its scale, so this has to be generous. A checker that is
+        # too strict reports bugs that aren't there.
+        tol = max(np.max(np.abs(R)) if R.size else 1.0, 1.0) * 1e-7
 
     # locate the pivots directly from R, without trusting pivot_cols
     found = []
@@ -552,7 +581,7 @@ def rref_tests():
     for name, A in RREF_SHAPES.items():
         A_before = A.copy()
         try:
-            Rmat, pivot_cols = RREF(A)
+            Rmat, pivot_cols, free_cols, rank = RREF(A)
         except Exception as ex:
             R.check(f"[rref: {name}] runs", False, f"{type(ex).__name__}: {ex}")
             continue
@@ -572,14 +601,24 @@ def rref_tests():
                 np.array_equal(A, A_before), f"A became\n{A}")
 
         R.check(f"[rref: {name}] rank == #pivots",
-                len(pivot_cols) == np.linalg.matrix_rank(A_before),
-                f"numpy says {np.linalg.matrix_rank(A_before)}, got {len(pivot_cols)}")
+                rank == np.linalg.matrix_rank(A_before),
+                f"numpy says {np.linalg.matrix_rank(A_before)}, got {rank}")
 
         R.check(f"[rref: {name}] row space preserved",
                 same_row_space(A_before, Rmat), f"R=\n{shown}")
 
+        R.check(f"[rref: {name}] pivot + free cols partition all columns",
+                np.array_equal(np.sort(pivot_cols + free_cols),
+                               np.arange(len(Rmat[0]))),
+                f"pivots {pivot_cols}, free {free_cols}, "
+                f"{len(Rmat[0])} columns")
+
+        R.check(f"[rref: {name}] rank <= min(m, n)",
+                rank <= min(A_before.shape),
+                f"rank {rank}, shape {A_before.shape}")
+
         # RREF is idempotent: reducing an already-reduced matrix changes nothing
-        R2, pivot_cols2 = RREF(Rmat.copy())
+        R2, pivot_cols2, free_cols2, rank2 = RREF(Rmat.copy())
         R.check(f"[rref: {name}] idempotent",
                 np.allclose(R2, Rmat, atol=1e-8)
                 and list(pivot_cols2) == list(pivot_cols),
@@ -589,13 +628,13 @@ def rref_tests():
 def rref_identity_test():
     """For an invertible A, RREF(A) is I, and RREF([A | I]) is [I | A^-1]."""
     A = np.array([[1., 2., 3.], [2., -5., 7.], [1., 2., 4.]])
-    Rmat, pivot_cols = RREF(A.copy())
+    Rmat, pivot_cols, _, _ = RREF(A.copy())
     R.check("rref of an invertible matrix is I",
             np.allclose(Rmat, np.eye(3), atol=1e-8)
             and list(pivot_cols) == [0, 1, 2], f"got\n{np.round(Rmat, 8)}")
 
     aug = np.hstack([A, np.eye(3)])
-    Rmat, pivot_cols = RREF(aug)
+    Rmat, pivot_cols, _, _ = RREF(aug)
     R.check("rref of [A | I] gives [I | A^-1]",
             np.allclose(Rmat[:, :3], np.eye(3), atol=1e-8)
             and np.allclose(Rmat[:, 3:], inversion(A.copy()), atol=1e-8),
@@ -606,10 +645,10 @@ def random_rref_tests(trials=300):
     rng = np.random.default_rng(2024)
     bad = 0
     for t in range(trials):
-        A = random_matrix(rng, force_rank_deficient=(t % 2 == 0))
+        A = random_matrix(rng, force_rank_deficient=(t % 2 == 0)) * (10.0 ** rng.integers(-8, 9))
         A_before = A.copy()
         try:
-            Rmat, pivot_cols = RREF(A)
+            Rmat, pivot_cols, free_cols, rank = RREF(A)
         except Exception as ex:
             bad += 1
             if bad <= 3:
@@ -618,11 +657,20 @@ def random_rref_tests(trials=300):
             continue
 
         problems = rref_violations(Rmat, pivot_cols)
-        if not np.allclose(Rmat, reference_rref(A_before), atol=1e-7):
-            problems.append("disagrees with the independent implementation")
-        if len(pivot_cols) != np.linalg.matrix_rank(A_before):
-            problems.append(f"pivots {pivot_cols}, numpy rank "
+        # atol must allow for accumulated roundoff in the ORIGINAL matrix,
+        # which the normalised R no longer shows the scale of
+        ref = reference_rref(A_before)
+        scale = max(np.max(np.abs(A_before)), 1.0)
+        if not np.allclose(Rmat, ref, atol=scale * np.finfo(float).eps * 1e4):
+            problems.append(f"disagrees with the independent implementation "
+                            f"(max diff {np.max(np.abs(Rmat - ref)):.2e})")
+        if rank != np.linalg.matrix_rank(A_before):
+            problems.append(f"rank {rank}, numpy rank "
                             f"{np.linalg.matrix_rank(A_before)}")
+        if not np.array_equal(np.sort(pivot_cols + free_cols),
+                              np.arange(A_before.shape[1])):
+            problems.append(f"pivots {pivot_cols} + free {free_cols} "
+                            f"don't partition {A_before.shape[1]} columns")
         if not same_row_space(A_before, Rmat):
             problems.append("row space changed")
 
@@ -634,6 +682,40 @@ def random_rref_tests(trials=300):
                       f"{np.round(reference_rref(A_before), 6)}\n  {problems}")
 
     R.check(f"randomised RREF ({trials} trials)", bad == 0, f"{bad} bad cases")
+
+def null_space_test(trials=300):
+    rng = np.random.default_rng(2024)
+    bad = 0
+    for t in range(trials):
+        A = random_matrix(rng, force_rank_deficient=(t % 2 == 0)) * (10.0 ** rng.integers(-8, 9))
+        A_before = A.copy()
+        try:
+            N = null_space_special(A)        
+        except Exception as ex:
+            bad += 1
+            if bad <= 3:
+                print(f"  crash on trial {t}, shape {A.shape}:\n{A_before}\n"
+                      f"  {type(ex).__name__}: {ex}")
+            continue
+        problems = []
+        
+        if len(N) != A.shape[1] - np.linalg.matrix_rank(A):
+            problems.append("n - rank != number of basis null vectors") 
+            
+        if np.linalg.matrix_rank(np.array(N)) != len(N):
+            problems.append("non independent basis null vectors")
+            
+        scale = max(np.max(np.abs(A_before)), 1.0)
+        for n in N:
+            if not np.allclose(A @ n, 0, atol=scale * np.finfo(float).eps * 1e4):
+                problems.append("vector doesnt belong in nullspace")
+                
+        if problems:
+            bad += 1
+            if bad <= 3:
+                print(f"trial {t}: \n non-null-space vectors have been returned")
+                
+    R.check(f"null space specials ({trials} trials)", bad == 0, f"{bad} bad cases")
 
 
 # ------------------------------------------------------------------ main
@@ -650,6 +732,7 @@ if __name__ == "__main__":
     rref_tests()
     rref_identity_test()
     random_rref_tests()
+    null_space_test()
 
     print("\nconditioning (informational, not pass/fail):")
     inversion_conditioning_report()

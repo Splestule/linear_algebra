@@ -18,7 +18,7 @@ def add_multiple_of_row(A, source, target, c):
 
 def inversion(E):
     assert E.shape[0] == E.shape[1]
-    tol = 1e-10
+    tol = np.max(np.abs(E)) * np.finfo(float).eps * max(len(E), len(E[0]))
     A = E.copy()
     I = np.eye(len(A))
     for i in range(len(A)):
@@ -48,8 +48,8 @@ def inversion(E):
     return I
 
 
-def elimination(A, b):
-    tol = 1e-10
+def elimination(A, b): 
+    tol = np.max(np.abs(A)) * np.finfo(float).eps * max(len(A), len(A[0]))
     E = A.copy()
     D = b.copy()
     pivot_cols = list()
@@ -87,7 +87,11 @@ def RREF(A):
             add_multiple_of_row(R, r, i, -1*ratio)
         ratio = 1/R[r][c]
         scale_row(R, r, ratio)
-    return R, pivot_cols
+    free_cols = []
+    for c in range(len(R[0])):
+        if c not in pivot_cols: free_cols.append(c)
+    rank = len(pivot_cols)
+    return R, pivot_cols, free_cols, rank
 
 def elimination_old(A, b):
     tol = 1e-10
@@ -130,6 +134,17 @@ def backsubstitution(A, b):
 
     return X
 
+def null_space_special(A):
+    R, pivot_cols, free_cols, rank = RREF(A.copy())
+    S = []
+    for i, c in enumerate(free_cols):
+        X = np.zeros(len(R[0]))
+        for j in range(len(pivot_cols)):
+            X[pivot_cols[j]] = -1 * R[j][c]
+        X[c] = 1
+        S.append(X)
+    return S
+
 if __name__ == "__main__":
     rng = np.random.default_rng(0)
     A = np.array([[1., 2., 3.],
@@ -162,8 +177,8 @@ if __name__ == "__main__":
     print(elimination(G, np.zeros(len(G)))[0])
     print(elimination_old(G, np.zeros(len(G)))[0])
 
-    F = np.array([[5., 2., 3.],
-                [9., 5., 6.],
-                [9., -6., 4.],
+    F = np.array([[5., 10., 3.],
+                [9., 18., 6.],
+                [9., 18., 4.],
                 [1., 2., 6.]])
-    print(RREF(F))
+    print(null_space_special(F))

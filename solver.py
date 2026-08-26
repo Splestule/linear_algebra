@@ -79,19 +79,23 @@ def elimination(A, b):
             row += 1
     return E, D, pivot_cols, L, P
 
-def RREF(A):
-    R, _, pivot_cols, _, _ = elimination(A, np.zeros(len(A)))
+def RREF(A, b=None):
+    if b is None:
+        b = np.zeros(len(A))
+    R, d, pivot_cols, _, _ = elimination(A, b)
     for r, c in enumerate(pivot_cols):
         for i in range(r):
             ratio = R[i][c]/R[r][c]
             add_multiple_of_row(R, r, i, -1*ratio)
+            add_multiple_of_row(d, r, i, -1*ratio)
         ratio = 1/R[r][c]
         scale_row(R, r, ratio)
+        scale_row(d, r, ratio)
     free_cols = []
     for c in range(len(R[0])):
         if c not in pivot_cols: free_cols.append(c)
     rank = len(pivot_cols)
-    return R, pivot_cols, free_cols, rank
+    return R, pivot_cols, free_cols, rank, d
 
 def elimination_old(A, b):
     tol = 1e-10
@@ -134,8 +138,11 @@ def backsubstitution(A, b):
 
     return X
 
-def null_space_special(A):
-    R, pivot_cols, free_cols, rank = RREF(A.copy())
+def null_space_special(A, pivot_cols=None, free_cols=None):
+    if pivot_cols and free_cols and len(pivot_cols) + len(free_cols) == len(A[0]):
+        R = A.copy()
+    else:
+        R, pivot_cols, free_cols, rank, b = RREF(A.copy())
     S = []
     for i, c in enumerate(free_cols):
         X = np.zeros(len(R[0]))
@@ -144,6 +151,43 @@ def null_space_special(A):
         X[c] = 1
         S.append(X)
     return S
+
+def solve(A, b):
+    R, pivot_cols, free_cols, rank, b = RREF(A.copy(), b.copy())
+    if np.allclose(np.zeros(len(R) - rank), b[rank:len(b)]):
+        X = np.zeros(len(R[0]))
+        for i, c in enumerate(pivot_cols):
+            X[c] = b[i]
+        null_space = null_space_special(R, pivot_cols, free_cols)
+    else:
+        return None, None
+
+    return X, null_space
+
+def four_subspaces(A):
+    R, pivot_cols, free_cols, rank, b = RREF(A.copy())
+    N = null_space_special(R, pivot_cols, free_cols)
+    C = []
+    for c in range(rank):
+        C.append(A[:, pivot_cols[c]])
+    At = A.T.copy()
+    Rt, pivot_colst, free_colst, rankt, bt = RREF(At.copy())
+    Nt = null_space_special(Rt, pivot_colst, free_colst)
+    Ct = []
+    for c in range(rankt):
+        Ct.append(At[:, pivot_colst[c]])
+    return C, N, Ct, Nt
+
+def determinant(A):
+    if len(A)==1: return A[0][0]
+    else:
+        det = 0
+        for i in range(len(A)):
+            if A[0][i] == 0: continue
+            else:
+                cofactor_matrix_pre = np.delete(A, i, axis=1)
+                det += (-1)**i*A[0][i]*determinant(cofactor_matrix_pre[1:])
+    return det
 
 if __name__ == "__main__":
     rng = np.random.default_rng(0)
@@ -181,4 +225,9 @@ if __name__ == "__main__":
                 [9., 18., 6.],
                 [9., 18., 4.],
                 [1., 2., 6.]])
-    print(null_space_special(F))
+    C, N, Ct, Nt = four_subspaces(F)
+    print("C: ", C, "N: ", N, "Ct: ", Ct, "Nt: ", Nt)
+    
+    H = rng.integers(-9, 10, size=(5, 5)).astype(float)
+    print(np.allclose(determinant(H),np.linalg.det(H)))
+    

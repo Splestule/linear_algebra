@@ -1,6 +1,6 @@
 import numpy as np
 from solver import (swap_rows, scale_row, add_multiple_of_row,
-                    elimination, backsubstitution, inversion, RREF, null_space_special)
+                    elimination, backsubstitution, inversion, RREF, null_space_special, four_subspaces)
 
 TOL = 1e-10
 
@@ -581,7 +581,7 @@ def rref_tests():
     for name, A in RREF_SHAPES.items():
         A_before = A.copy()
         try:
-            Rmat, pivot_cols, free_cols, rank = RREF(A)
+            Rmat, pivot_cols, free_cols, rank, _ = RREF(A)
         except Exception as ex:
             R.check(f"[rref: {name}] runs", False, f"{type(ex).__name__}: {ex}")
             continue
@@ -618,7 +618,7 @@ def rref_tests():
                 f"rank {rank}, shape {A_before.shape}")
 
         # RREF is idempotent: reducing an already-reduced matrix changes nothing
-        R2, pivot_cols2, free_cols2, rank2 = RREF(Rmat.copy())
+        R2, pivot_cols2, free_cols2, rank2, _ = RREF(Rmat.copy())
         R.check(f"[rref: {name}] idempotent",
                 np.allclose(R2, Rmat, atol=1e-8)
                 and list(pivot_cols2) == list(pivot_cols),
@@ -628,13 +628,13 @@ def rref_tests():
 def rref_identity_test():
     """For an invertible A, RREF(A) is I, and RREF([A | I]) is [I | A^-1]."""
     A = np.array([[1., 2., 3.], [2., -5., 7.], [1., 2., 4.]])
-    Rmat, pivot_cols, _, _ = RREF(A.copy())
+    Rmat, pivot_cols, _, _, _ = RREF(A.copy())
     R.check("rref of an invertible matrix is I",
             np.allclose(Rmat, np.eye(3), atol=1e-8)
             and list(pivot_cols) == [0, 1, 2], f"got\n{np.round(Rmat, 8)}")
 
     aug = np.hstack([A, np.eye(3)])
-    Rmat, pivot_cols, _, _ = RREF(aug)
+    Rmat, pivot_cols, _, _, _ = RREF(aug)
     R.check("rref of [A | I] gives [I | A^-1]",
             np.allclose(Rmat[:, :3], np.eye(3), atol=1e-8)
             and np.allclose(Rmat[:, 3:], inversion(A.copy()), atol=1e-8),
@@ -648,7 +648,7 @@ def random_rref_tests(trials=300):
         A = random_matrix(rng, force_rank_deficient=(t % 2 == 0)) * (10.0 ** rng.integers(-8, 9))
         A_before = A.copy()
         try:
-            Rmat, pivot_cols, free_cols, rank = RREF(A)
+            Rmat, pivot_cols, free_cols, rank, _ = RREF(A)
         except Exception as ex:
             bad += 1
             if bad <= 3:
@@ -716,6 +716,51 @@ def null_space_test(trials=300):
                 print(f"trial {t}: \n non-null-space vectors have been returned")
                 
     R.check(f"null space specials ({trials} trials)", bad == 0, f"{bad} bad cases")
+    
+def four_subspaces_test(trials=300):
+    rng = np.random.default_rng(2024)
+    bad = 0
+    for t in range(trials):
+        A = random_matrix(rng, force_rank_deficient=(t % 2 == 0)) * (10.0 ** rng.integers(-8, 9))
+        A_before = A.copy()
+        try:
+            C, N, Ct, Nt = four_subspaces(A.copy())        
+        except Exception as ex:
+            bad += 1
+            if bad <= 3:
+                print(f"  crash on trial {t}, shape {A.shape}:\n{A_before}\n"
+                      f"  {type(ex).__name__}: {ex}")
+            continue
+        problems = []
+        
+        if len(N) != A.shape[1] - np.linalg.matrix_rank(A):
+            problems.append("n - rank != number of basis null vectors")
+        if len(C) != np.linalg.matrix_rank(A):
+            problems.append("rank != number of basis column vectors") 
+        if len(Nt) != A.T.copy().shape[1] - np.linalg.matrix_rank(A):
+            problems.append("m - rank != number of basis left null vectors")
+        if len(Ct) != np.linalg.matrix_rank(A):
+            problems.append("rank != number of basis row vectors") 
+            
+        subspaces = [C, N, Ct, Nt]
+        for s in subspaces:
+            if np.linalg.matrix_rank(np.array(s)) != len(s):
+                problems.append("non independent basis vectors")
+            
+        orthogonality = [(C, Nt), (Ct, N)]
+        for o in orthogonality:
+            for i in range(len(o[0])):
+                for j in range(len(o[1])):
+                    if not np.allclose(o[0][i] @ o[1][j], 0, atol=max(np.max(np.abs(A_before)), 1.0) * np.finfo(float).eps * 1e4):
+                        problems.append("non orthogonal row and null vectors")
+                
+        if problems:
+            bad += 1
+            if bad <= 3:
+                print(f"trial {t}: \n errors within the subspaces")
+                
+    R.check(f"subspaces tests ({trials} trials)", bad == 0, f"{bad} bad cases")
+    
 
 
 # ------------------------------------------------------------------ main
@@ -733,6 +778,7 @@ if __name__ == "__main__":
     rref_identity_test()
     random_rref_tests()
     null_space_test()
+    four_subspaces_test()
 
     print("\nconditioning (informational, not pass/fail):")
     inversion_conditioning_report()
